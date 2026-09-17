@@ -91,6 +91,13 @@ describe('OrderLifecycleService.getOrderDetail', () => {
         },
         error: null,
       }),
+      findOrdersWithCount: vi.fn().mockResolvedValue({
+        data: [],
+        error: null,
+        count: 0,
+      }),
+      findProfilesByIds: vi.fn().mockResolvedValue({ data: [], error: null }),
+      findRatingsForCustomer: vi.fn().mockResolvedValue({ data: [], error: null }),
     };
     orderTimelineService = {
       getTimeline: vi.fn().mockResolvedValue({ data: [], error: null }),
@@ -138,5 +145,68 @@ describe('OrderLifecycleService.getOrderDetail', () => {
     for (const sensitiveField of sensitiveFields) {
       expect(selectedFields).not.toContain(sensitiveField);
     }
+  });
+
+  describe('getOrderHistory', () => {
+    it('selects cargo details and route coordinates in the order history projection', async () => {
+      await service.getOrderHistory('customer-1', 1, 10);
+
+      expect(orderRepository.findOrdersWithCount).toHaveBeenCalledTimes(1);
+      const [customerId, projection, pagination] = orderRepository.findOrdersWithCount.mock.calls[0];
+
+      expect(customerId).toBe('customer-1');
+      expect(pagination).toEqual({ page: 1, limit: 10 });
+
+      const selectedFields = projection.split(',').map(field => field.trim());
+
+      const expectedFields = [
+        'id',
+        'order_display_id',
+        'status',
+        'pickup_address',
+        'pickup_lat',
+        'pickup_lng',
+        'drop_address',
+        'drop_lat',
+        'drop_lng',
+        'pickup_date',
+        'total_amount',
+        'goods_type',
+        'weight_tonnes',
+        'length_ft',
+        'width_ft',
+        'height_ft',
+        'is_stackable',
+        'is_fragile',
+        'special_requirements',
+        'driver_id',
+        'eta',
+        'truck_number',
+        'created_at',
+      ];
+
+      for (const field of expectedFields) {
+        expect(selectedFields).toContain(field);
+      }
+
+      expect(selectedFields).not.toContain('*');
+
+      const sensitiveFields = [
+        'delivery_otp',
+        'upi_id',
+        'payment_method_id',
+        'blockchain_tx_hash',
+        'escrow_status',
+        'escrow_amount_wei',
+        'escrow_refund_amount',
+        'escrow_release_attempts',
+        'release_tx_hash',
+        'refund_tx_hash',
+      ];
+
+      for (const sensitiveField of sensitiveFields) {
+        expect(selectedFields).not.toContain(sensitiveField);
+      }
+    });
   });
 });

@@ -86,41 +86,22 @@ class _LoginScreenState extends State<LoginScreen> {
         if (!mounted) return;
 
         final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('is_authenticated', true);
         if (!mounted) return;
-        final bool hasSession = prefs.getBool('is_authenticated') ?? false;
-
-        if (hasSession) {
-          _navigateToShell();
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No active session found. Please log in using OTP first.'),
-            ),
-          );
-        }
+        _navigateToShell();
       }
     } catch (_) {
       // Gracefully fall back to standard OTP form if biometrics are cancelled/fail
     }
   }
+
   void _sendOtp() {
     FocusScope.of(context).unfocus();
-    final phone = _phoneController.text.replaceAll(' ', '').trim();
-
-    if (phone.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter phone number')),
-      );
+    final String? cleanedPhone = _validateAndGetCleanedPhone(_phoneController);
+    if (cleanedPhone == null) {
       return;
     }
-
-    if (phone.length != 10 || int.tryParse(phone) == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid 10-digit phone number')),
-      );
-      return;
-    }
-
+    handleOtpRequest(_phoneController);
     setState(() => _showOtp = true);
   }
 
@@ -302,6 +283,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     if (value.isNotEmpty && index < 3) {
                       _otpFocusNodes[index + 1].requestFocus();
                     }
+                    if (value.isEmpty && index > 0) {
+                      _otpFocusNodes[index - 1].requestFocus();
+                    }
                   },
                 ),
               ),
@@ -317,5 +301,42 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ],
     );
+  }
+
+  // Validates phone number, manages SnackBar alerts, and extracts clean 10-digit format
+  String? _validateAndGetCleanedPhone(TextEditingController controller) {
+    String raw = controller.text.trim();
+    String cleaned = raw.replaceAll(RegExp(r'\\D'), '');
+
+    if (cleaned.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a phone number'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return null;
+    }
+
+    if (cleaned.length != 10 || !RegExp(r'^[0-9]{10}$').hasMatch(cleaned)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid 10-digit phone number'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return null;
+    }
+
+    return cleaned;
+  }
+
+  // Primary OTP request trigger bound to UI action
+  void handleOtpRequest(TextEditingController controller) {
+    final String? cleanedPhone = _validateAndGetCleanedPhone(controller);
+    if (cleanedPhone == null) {
+      return;
+    }
+    debugPrint('[LoginScreen] Phone validation passed.');
   }
 }

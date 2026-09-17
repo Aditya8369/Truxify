@@ -2,15 +2,19 @@ import express from 'express';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import logger from '../middleware/logger.js';
 import { supabase } from '../config/db.js';
-import { BlockchainMetrics, EscalationHandler } from '../services/blockchain/index.js';
+import {
+  BlockchainMetrics,
+  EscalationHandler,
+  defaultBlockchainMetrics,
+  defaultEscalationHandler,
+} from '../services/blockchain/index.js';
 
 const router = express.Router();
 
-// Router-local fallback instances — used only when the router is mounted
-// standalone; the index.js /api/blockchain mount attaches the shared
-// singletons to req so these are never clobbered over them.
-const blockchainMetrics = new BlockchainMetrics();
-const escalationHandler = new EscalationHandler();
+// Canonical shared singleton fallback instances — ensure in-memory state
+// (escalation timers, alert maps) remains uniform across requests and tests.
+const blockchainMetrics = defaultBlockchainMetrics;
+const escalationHandler = defaultEscalationHandler;
 
 const resolveSupabaseClient = (req) => req.supabase ?? supabase;
 
@@ -52,7 +56,10 @@ router.get('/health', async (req, res) => {
       ...health,
     });
   } catch (err) {
-    logger.error('Error fetching monitor health:', err.message);
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_HEALTH_FETCH_ERROR', error: err.message },
+      'Error fetching monitor health'
+    );
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -71,7 +78,10 @@ router.get('/metrics', authenticate, requireRole(['admin', 'support']), async (r
       metrics,
     });
   } catch (err) {
-    logger.error('Error fetching metrics:', err.message);
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_METRICS_FETCH_ERROR', error: err.message },
+      'Error fetching metrics'
+    );
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -90,7 +100,10 @@ router.get('/alerts/active', authenticate, requireRole(['admin', 'support']), as
       count: activeAlerts.length,
     });
   } catch (err) {
-    logger.error('Error fetching active alerts:', err.message);
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_ACTIVE_ALERTS_FETCH_ERROR', error: err.message },
+      'Error fetching active alerts'
+    );
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -119,7 +132,10 @@ router.post('/alerts/:alertId/resolve', authenticate, requireRole(['admin', 'sup
       alertId,
     });
   } catch (err) {
-    logger.error('Error resolving alert:', err.message);
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_ALERT_RESOLVE_ERROR', alertId: req.params.alertId, error: err.message },
+      'Error resolving alert'
+    );
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -165,9 +181,8 @@ router.get('/events', authenticate, requireRole(['admin', 'support']), async (re
       return res.status(400).json({ error: 'Invalid severity level' });
     }
 
-    const db = req.supabase || supabase;
+    const db = resolveSupabaseClient(req) || req.supabase || supabase;
     let query = db
-    let query = resolveSupabaseClient(req)
       .from('blockchain_monitoring_events')
       .select('*')
       .order('created_at', { ascending: false })
@@ -184,7 +199,10 @@ router.get('/events', authenticate, requireRole(['admin', 'support']), async (re
     const { data: events, error } = await query;
 
     if (error) {
-      logger.error('Failed to fetch events:', error);
+      logger.error(
+        { requestId: req.requestId, event: 'BLOCKCHAIN_EVENTS_FETCH_FAILED', error: error?.message || error },
+        'Failed to fetch events'
+      );
       return res.status(500).json({ error: 'Failed to fetch events' });
     }
 
@@ -194,7 +212,10 @@ router.get('/events', authenticate, requireRole(['admin', 'support']), async (re
       events,
     });
   } catch (err) {
-    logger.error('Error fetching events:', err.message);
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_EVENTS_FETCH_ERROR', error: err.message },
+      'Error fetching events'
+    );
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -212,16 +233,18 @@ router.get('/escalations/:alertId', authenticate, requireRole(['admin', 'support
       return res.status(400).json({ error: 'Invalid alert ID format' });
     }
 
-    const db = req.supabase || supabase;
+    const db = resolveSupabaseClient(req) || req.supabase || supabase;
     const { data: escalation, error } = await db
-    const { data: escalation, error } = await resolveSupabaseClient(req)
       .from('blockchain_escalations')
       .select('*')
       .eq('alert_id', alertId)
       .single();
 
     if (error) {
-      logger.error('Failed to fetch escalation:', error);
+      logger.error(
+        { requestId: req.requestId, event: 'BLOCKCHAIN_ESCALATION_FETCH_FAILED', alertId, error: error?.message || error },
+        'Failed to fetch escalation'
+      );
       return res.status(404).json({ error: 'Escalation not found' });
     }
 
@@ -230,7 +253,10 @@ router.get('/escalations/:alertId', authenticate, requireRole(['admin', 'support
       escalation,
     });
   } catch (err) {
-    logger.error('Error fetching escalation:', err.message);
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_ESCALATION_FETCH_ERROR', alertId: req.params.alertId, error: err.message },
+      'Error fetching escalation'
+    );
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });

@@ -54,13 +54,14 @@ export function initReputationContract() {
       );
       logger.info("Polygon Reputation contract client initialised.");
     } catch (err) {
+      const errorMessage = err?.message ?? String(err);
       logger.error(
-        { event: 'REPUTATION_CONTRACT_INIT_ERROR', error: err && (err.message || String(err)) },
+        { event: 'REPUTATION_CONTRACT_INIT_ERROR', error: errorMessage },
         '[Reputation] Blockchain call failed during contract init',
       );
       reputationContract = null;
       logger.error(
-        { event: 'REPUTATION_INIT_ERROR', error: err && err.message },
+        { event: 'REPUTATION_INIT_ERROR', error: errorMessage },
         'Failed to initialise Reputation contract client',
       );
     }

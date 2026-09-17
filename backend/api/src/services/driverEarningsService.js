@@ -181,7 +181,7 @@ export const calculateEarningsAggregation = (trips, allCompletedTrips, lifetimeT
   return {
     gross_earnings: grossEarnings,
     net_earnings: totalNetEarnings,
-    trips_completed: totalTripsCount,
+    trips_completed: completedTripsCount,
     average_earnings: averageEarningsPerTrip,
     completion_rate: completionRate,
     weekly_chart: weeklyChart,

@@ -126,6 +126,23 @@ describe('apiResponse helpers', () => {
       expect(result.pagination.total).toBe(0);
       expect(result.pagination.totalPages).toBe(0);
     });
+
+    it('defaults to safe limit of 10 when limit is zero or negative', () => {
+      const resultNegative = paginated([], 1, -5, 50);
+      expect(resultNegative.pagination.limit).toBe(10);
+      expect(resultNegative.pagination.pageSize).toBe(10);
+      expect(resultNegative.pagination.totalPages).toBe(5);
+
+      const resultZero = paginated([], 1, 0, 50);
+      expect(resultZero.pagination.limit).toBe(10);
+      expect(resultZero.pagination.pageSize).toBe(10);
+      expect(resultZero.pagination.totalPages).toBe(5);
+
+      const resultNegativeStr = paginated([], 1, '-10', 50);
+      expect(resultNegativeStr.pagination.limit).toBe(10);
+      expect(resultNegativeStr.pagination.pageSize).toBe(10);
+      expect(resultNegativeStr.pagination.totalPages).toBe(5);
+    });
   });
 });
 

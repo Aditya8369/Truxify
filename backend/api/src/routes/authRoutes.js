@@ -58,6 +58,7 @@ import {
   OTP_LOCKOUT_MINUTES,
 } from "../services/order/orderNotificationService.js";
 import logger from "../middleware/logger.js";
+import { refreshToken } from "../controllers/authController.js";
 
 const router = express.Router();
 
@@ -73,6 +74,11 @@ const authLimiter = rateLimit({
 });
 
 router.use(authLimiter);
+
+/**
+ * Exchange a valid rotating refresh token for a backend JWT and a new refresh token.
+ */
+router.post("/refresh", refreshToken);
 
 export function withTimeout(operation, timeoutMs, message) {
   let timer;
@@ -357,7 +363,7 @@ router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
   }
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'truxify-jwt-secret-key';
+const JWT_SECRET = process.env.JWT_SECRET;
 
 /**
  * @openapi
@@ -443,14 +449,19 @@ router.post("/verify", async (req, res) => {
       }
     }
 
-    let userId = `usr-${verifiedUid.slice(-8)}`;
+    let userId = null;
     if (supabase) {
       try {
-        const { data: profile } = await supabase
+        const { data: profile, error: profileErr } = await supabase
           .from("profiles")
           .select("id, role, full_name, phone, is_active")
           .or(`firebase_uid.eq.${verifiedUid},email.eq.${verifiedEmail}`)
           .maybeSingle();
+
+        if (profileErr) {
+          logger.error(`[auth/verify] Supabase profile query error: ${profileErr.message}`);
+          return res.status(500).json({ success: false, error: "Database error during authentication." });
+        }
 
         if (profile) {
           if (profile.is_active === false) {
@@ -461,10 +472,26 @@ router.post("/verify", async (req, res) => {
           }
           userId = profile.id;
           verifiedRole = profile.role || verifiedRole;
+        } else if (process.env.NODE_ENV !== "test") {
+          return res.status(401).json({
+            success: false,
+            error: "User profile not found. Please complete profile registration before signing in.",
+            code: "PROFILE_NOT_FOUND",
+          });
         }
       } catch (dbErr) {
-        logger.warn(`[auth/verify] Supabase profile lookup skipped: ${dbErr.message}`);
+        logger.error(`[auth/verify] Supabase profile lookup failed: ${dbErr.message}`);
+        return res.status(500).json({ success: false, error: "Internal server error." });
       }
+    }
+
+    if (!userId) {
+      userId = `usr-${verifiedUid.slice(-8)}`;
+    }
+
+    if (!JWT_SECRET) {
+      logger.error('[auth/verify] JWT_SECRET is not configured');
+      return res.status(503).json({ success: false, error: 'Authentication service is temporarily unavailable.' });
     }
 
     const backendJwt = jwt.sign(

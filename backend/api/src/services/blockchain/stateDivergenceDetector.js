@@ -341,25 +341,30 @@ class StateDivergenceDetector {
   }
 
   analyzeDivergence(nodeStates) {
-    if (nodeStates.length === 0) {
+    if (!nodeStates || !Array.isArray(nodeStates) || nodeStates.length === 0) {
       return { divergenceDetected: false, reason: 'no_responses' };
     }
 
-    const blockNumbers = nodeStates.map(s => s.blockNumber);
+    const validStates = nodeStates.filter(s => s != null && typeof s.blockNumber === 'number');
+    if (validStates.length === 0) {
+      return { divergenceDetected: false, reason: 'no_valid_states' };
+    }
+
+    const blockNumbers = validStates.map(s => s.blockNumber);
     const maxBlockNumber = Math.max(...blockNumbers);
     const minBlockNumber = Math.min(...blockNumbers);
     const blockDivergence = maxBlockNumber - minBlockNumber;
 
     const divergenceDetails = {
       timestamp: new Date().toISOString(),
-      nodeCount: nodeStates.length,
+      nodeCount: validStates.length,
       maxBlockNumber,
       minBlockNumber,
       blockDivergence,
-      nodeStates,
+      nodeStates: validStates,
       divergenceDetected: blockDivergence > 10,
       divergenceSeverity: this.calculateDivergenceSeverity(blockDivergence),
-      canonicalState: nodeStates.find(s => s.blockNumber === maxBlockNumber),
+      canonicalState: validStates.find(s => s.blockNumber === maxBlockNumber) || null,
     };
 
     if (divergenceDetails.divergenceDetected) {
@@ -405,11 +410,11 @@ class StateDivergenceDetector {
         .from('blockchain_divergence_log')
         .insert([{
           divergence_id: divergenceId,
-          severity: divergenceResult.divergenceSeverity,
-          block_divergence: divergenceResult.blockDivergence,
-          node_states: divergenceResult.nodeStates,
-          canonical_state: divergenceResult.canonicalState,
-          detected_at: divergenceResult.timestamp,
+          severity: divergenceResult?.divergenceSeverity,
+          block_divergence: divergenceResult?.blockDivergence,
+          node_states: divergenceResult?.nodeStates,
+          canonical_state: divergenceResult?.canonicalState,
+          detected_at: divergenceResult?.timestamp,
         }]);
 
       logger.info('[StateDivergenceDetector] Divergence logged:', divergenceId);
@@ -422,13 +427,13 @@ class StateDivergenceDetector {
     try {
       const alert = {
         type: 'BLOCKCHAIN_STATE_DIVERGENCE',
-        severity: divergenceResult.divergenceSeverity === 'CRITICAL' ? 'CRITICAL' : 'HIGH',
+        severity: divergenceResult?.divergenceSeverity === 'CRITICAL' ? 'CRITICAL' : 'HIGH',
         divergenceId,
-        blockDivergence: divergenceResult.blockDivergence,
-        message: `Blockchain state divergence of ${divergenceResult.blockDivergence} blocks detected`,
-        nodeCount: divergenceResult.nodeCount,
+        blockDivergence: divergenceResult?.blockDivergence,
+        message: `Blockchain state divergence of ${divergenceResult?.blockDivergence} blocks detected`,
+        nodeCount: divergenceResult?.nodeCount,
         divergenceDetails: divergenceResult,
-        timestamp: divergenceResult.timestamp,
+        timestamp: divergenceResult?.timestamp,
       };
 
       logger.warn('[StateDivergenceDetector] Divergence alert:', alert);
@@ -477,7 +482,9 @@ class StateDivergenceDetector {
           };
         }
 
-        const blocksSinceTransaction = currentBlockNumber - receipt.blockNumber;
+        const currentBlock = typeof currentBlockNumber === 'number' ? currentBlockNumber : 0;
+        const receiptBlock = typeof receipt.blockNumber === 'number' ? receipt.blockNumber : 0;
+        const blocksSinceTransaction = currentBlock - receiptBlock;
         const isFinalized = blocksSinceTransaction >= FINALITY_THRESHOLD;
 
         return {
@@ -499,27 +506,98 @@ class StateDivergenceDetector {
     return measureExecution('StateDivergenceDetector.getConsensusState', async () => {
       const nodeStates = await this.queryAllNodes();
 
-      if (nodeStates.length < MIN_CONSENSUS) {
+      if (!nodeStates || nodeStates.length < MIN_CONSENSUS) {
         logger.error('[StateDivergenceDetector] Insufficient nodes for consensus');
         return null;
       }
 
-      const sorted = nodeStates.sort((a, b) => b.blockNumber - a.blockNumber);
-      return sorted[0];
+      const validStates = nodeStates.filter(s => s != null && typeof s.blockNumber === 'number');
+      if (validStates.length === 0) {
+        logger.error('[StateDivergenceDetector] No valid node states found for consensus');
+        return null;
+      }
+
+      const sorted = validStates.sort((a, b) => b.blockNumber - a.blockNumber);
+      return sorted[0] || null;
     });
+  }
+
+  compareStates(onChainState, offChainState) {
+    if (!onChainState && !offChainState) {
+      return { divergent: false, reason: 'both_null' };
+    }
+    if (!onChainState) {
+      logger.warn('[StateDivergenceDetector] On-chain state is null while off-chain state exists');
+      return {
+        divergent: true,
+        reason: 'on_chain_state_null',
+        onChainState: null,
+        offChainState,
+      };
+    }
+    if (!offChainState) {
+      logger.warn('[StateDivergenceDetector] Off-chain state is null while on-chain state exists');
+      return {
+        divergent: true,
+        reason: 'off_chain_state_null',
+        onChainState,
+        offChainState: null,
+      };
+    }
+
+    const onChainBlock = typeof onChainState.blockNumber === 'number' ? onChainState.blockNumber : null;
+    const offChainBlock = typeof offChainState.blockNumber === 'number' ? offChainState.blockNumber : null;
+    const blockDifference = (onChainBlock !== null && offChainBlock !== null)
+      ? Math.abs(onChainBlock - offChainBlock)
+      : null;
+
+    const hashMatch = onChainState.blockHash && offChainState.blockHash
+      ? onChainState.blockHash === offChainState.blockHash
+      : true;
+
+    return {
+      divergent: (blockDifference !== null && blockDifference > 10) || !hashMatch,
+      blockDifference,
+      hashMatch,
+      onChainState,
+      offChainState,
+    };
   }
 
   async reconcileState(oldState, newState) {
     return measureExecution('StateDivergenceDetector.reconcileState', async () => {
       const reconciliationId = `recon_${crypto.randomBytes(16).toString('hex')}`;
 
+      let blockNumberDifference = null;
+      let divergenceReason = null;
+      let status = 'in_progress';
+
+      if (!oldState && !newState) {
+        divergenceReason = 'both_states_null';
+        status = 'failed';
+        logger.warn('[StateDivergenceDetector] Both on-chain and off-chain states are null during reconciliation');
+      } else if (!oldState) {
+        divergenceReason = 'off_chain_state_null';
+        blockNumberDifference = typeof newState.blockNumber === 'number' ? newState.blockNumber : null;
+        logger.warn({ newState }, '[StateDivergenceDetector] Off-chain state is null during reconciliation');
+      } else if (!newState) {
+        divergenceReason = 'on_chain_state_null';
+        blockNumberDifference = typeof oldState.blockNumber === 'number' ? -oldState.blockNumber : null;
+        logger.warn({ oldState }, '[StateDivergenceDetector] On-chain state is null during reconciliation');
+      } else {
+        const oldBlock = typeof oldState.blockNumber === 'number' ? oldState.blockNumber : 0;
+        const newBlock = typeof newState.blockNumber === 'number' ? newState.blockNumber : 0;
+        blockNumberDifference = newBlock - oldBlock;
+      }
+
       const reconciliation = {
         reconciliationId,
-        oldState,
-        newState,
-        blockNumberDifference: newState.blockNumber - oldState.blockNumber,
+        oldState: oldState || null,
+        newState: newState || null,
+        blockNumberDifference,
+        divergenceReason,
         initiatedAt: new Date().toISOString(),
-        status: 'in_progress',
+        status,
       };
 
       try {

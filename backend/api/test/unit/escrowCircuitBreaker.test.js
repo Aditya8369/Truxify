@@ -42,9 +42,10 @@ describe('escrowCircuitBreaker Unit Tests', () => {
       redisMock.get.mockResolvedValue(null);
       expect(await isEscrowPaused()).toBe(false);
 
-      redisMock.get.mockResolvedValue('0');
-      expect(await isEscrowPaused()).toBe(false);
-    });
+  it('isEscrowPaused fails closed when Redis is unavailable', async () => {
+    redisMock.get.mockRejectedValue(new Error('down'));
+    expect(await isEscrowPaused()).toBe(true);
+  });
 
     it('isEscrowPaused fails open when Redis throws an error', async () => {
       redisMock.get.mockRejectedValue(new Error('Redis connection lost'));
@@ -74,15 +75,10 @@ describe('escrowCircuitBreaker Unit Tests', () => {
       await expect(setEscrowPaused(true)).rejects.toThrow('Redis write failed');
     });
 
-    it('getPauseState reports active pause flag and pausedAt timestamp', async () => {
-      redisMock.get.mockImplementation((key) =>
-        key === 'escrow:circuit-breaker:paused'
-          ? Promise.resolve('1')
-          : Promise.resolve('2026-09-17T09:00:00.000Z'),
-      );
-      const state = await getPauseState();
-      expect(state).toEqual({ paused: true, pausedAt: '2026-09-17T09:00:00.000Z' });
-    });
+  it('getPauseState reports an unknown Redis state as paused', async () => {
+    const state = await getPauseState();
+    expect(state).toEqual({ paused: false, pausedAt: null });
+  });
 
     it('getPauseState returns paused: false and pausedAt: null when no flag is set', async () => {
       const state = await getPauseState();

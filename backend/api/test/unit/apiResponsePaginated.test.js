@@ -82,4 +82,16 @@ describe('apiResponse paginated', () => {
     expect(result.pagination.pageSize).toBe(1000);
     expect(result.pagination.totalPages).toBe(10);
   });
+
+  it('guards against zero and negative limit by defaulting to 10', () => {
+    const resultNegative = paginated([1, 2], 1, -20, 100);
+    expect(resultNegative.pagination.limit).toBe(10);
+    expect(resultNegative.pagination.pageSize).toBe(10);
+    expect(resultNegative.pagination.totalPages).toBe(10);
+
+    const resultZero = paginated([1, 2], 1, 0, 100);
+    expect(resultZero.pagination.limit).toBe(10);
+    expect(resultZero.pagination.pageSize).toBe(10);
+    expect(resultZero.pagination.totalPages).toBe(10);
+  });
 });

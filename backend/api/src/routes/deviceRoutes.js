@@ -41,7 +41,7 @@ import {
   getDevicePlatforms,
   pruneDevices 
 } from '../controllers/deviceController.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, requireRole } from '../middleware/auth.js';
 import { validateBody } from '../middleware/validate.js';
 import { registerDeviceSchema, unregisterDeviceSchema } from '../validation/requestSchemas.js';
 import { deviceLimiter } from '../middleware/rateLimiter.js';
@@ -152,6 +152,6 @@ router.get('/platforms', authenticate, getDevicePlatforms);
  *       500:
  *         description: Server error
  */
-router.post('/prune', authenticate, pruneDevices);
+router.post('/prune', authenticate, requireRole(['admin']), pruneDevices);
 
 export default router;

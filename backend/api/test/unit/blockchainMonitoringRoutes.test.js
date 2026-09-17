@@ -24,6 +24,10 @@ vi.mock('../../src/middleware/auth.js', () => ({
   requireRole: () => (_req, _res, next) => next(),
 }));
 
+vi.mock('../../src/config/db.js', () => ({
+  supabase: { from: vi.fn() },
+}));
+
 function buildApp(deps) {
   const app = express();
   app.use(express.json());

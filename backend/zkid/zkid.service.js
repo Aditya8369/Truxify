@@ -3,8 +3,9 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import logger from '../api/src/middleware/logger.js';
 import { supabase } from '../api/src/config/db.js';
+import { verifyProofOwnership } from './proofVerifier.js';
 
-class ZKIDService {
+export class ZKIDService {
     constructor() {
         this.provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
         this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
@@ -152,40 +153,20 @@ class ZKIDService {
     /**
      * Validate a zero-knowledge verification proof before trusting it.
      *
-     * The prover must sign the verification challenge (the keccak256 hash of
-     * the identity and credential hashes) with the wallet that owns the
-     * identity. We recover the prover's address from that signature so the
-     * `verified` flag reflects an actual, attributable proof rather than a
-     * hardcoded `true`. Missing, malformed, zero, or non-recoverable proofs
-     * are rejected.
+     * The recovered signer must be the currently registered owner of the
+     * identity and the identity itself must still be active.
      *
-     * @returns {{ verified: boolean, prover?: string, reason?: string }}
+     * @returns {Promise<{ verified: boolean, prover?: string, reason?: string }>}
      */
-    verifyProof(proofData, identityHash, credentialHash) {
-        if (!proofData || !ethers.isHexString(proofData) || proofData === ethers.ZeroHash) {
-            return { verified: false, reason: 'Missing or invalid proofData' };
-        }
-
-        const challenge = ethers.keccak256(
-            ethers.AbiCoder.defaultAbiCoder().encode(
-                ['bytes32', 'bytes32'],
-                [identityHash, credentialHash]
-            )
-        );
-
-        try {
-            const prover = ethers.verifyMessage(ethers.getBytes(challenge), proofData);
-            return { verified: true, prover };
-        } catch (err) {
-            logger.error('Proof signature recovery failed:', err);
-            return { verified: false, reason: 'Proof signature recovery failed' };
-        }
+    async verifyProof(proofData, identityHash, credentialHash) {
+        const identity = await this.getIdentity(identityHash);
+        return verifyProofOwnership(proofData, identityHash, credentialHash, identity);
     }
 
     async requestVerification(identityHash, credentialHash, proofData) {
         try {
             // Never submit or record a verification without a passing proof.
-            const proof = this.verifyProof(proofData, identityHash, credentialHash);
+            const proof = await this.verifyProof(proofData, identityHash, credentialHash);
             if (!proof.verified) {
                 throw new Error(proof.reason || 'Proof verification failed');
             }

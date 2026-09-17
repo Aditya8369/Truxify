@@ -72,6 +72,7 @@ import escortWalletRoutes from './routes/escortWalletRoutes.js'
 import carbonTokenRoutes from './routes/carbonTokenRoutes.js'
 import mlRoutes from './routes/mlRoutes.js'
 import tireAnalyticsRoutes from './routes/tireAnalyticsRoutes.js'
+import arLoadingRoutes from './routes/arLoadingRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
@@ -521,6 +522,7 @@ app.use('/api/payments', authenticate, fraudDetectionMiddleware, networkAnalysis
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
+app.use('/api/drone', droneRoutes)
 // Mounted here, with the other REST routes, so it sits behind the full
 // middleware chain — body parsers, correlation/request IDs, HPP protection,
 // content-type enforcement, fraud detection and the /api rate limiter.
@@ -575,6 +577,7 @@ app.use('/api/oracle', oracleRoutes)
 app.use('/api/carbon-credits', carbonTokenRoutes)
 app.use('/api/ml', mlRoutes)
 app.use('/api/tire-analytics', tireAnalyticsRoutes)
+app.use('/api/ar-loading', arLoadingRoutes)
 
 // ============================================================================
 // 🆕 BLOCKCHAIN MONITORING ROUTES
