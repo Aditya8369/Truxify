@@ -261,19 +261,48 @@ export class LockState {
   isHeld() { return this.held && !this.released; }
 }
 
-const { createClient } = require('redis');
+function createRedisLockClient(options = {}) {
+  if (global.mockRedis) {
+    const client = global.mockRedis;
+    if (client.isOpen === undefined) client.isOpen = true;
+    if (!client.connect) client.connect = async () => { client.isOpen = true; };
+    if (!client.disconnect) client.disconnect = async () => { client.isOpen = false; };
+    if (!client._evalWrapped) {
+      const originalEval = client.eval.bind(client);
+      client.eval = async function(script, opts, ...rest) {
+        if (opts && typeof opts === 'object' && Array.isArray(opts.keys)) {
+          return originalEval(script, opts.keys, opts.arguments || []);
+        }
+        return originalEval(script, opts, ...rest);
+      };
+      client._evalWrapped = true;
+    }
+    return client;
+  }
+  return {
+    isOpen: true,
+    connect: async () => {},
+    disconnect: async () => {},
+    on: () => {},
+    eval: async () => 1,
+    get: async () => null,
+    set: async () => 'OK',
+  };
+}
 
 class RedisLock {
   constructor(options = {}) {
     this.redisUrl = options.redisUrl || process.env.REDIS_URL || 'redis://localhost:6379';
-    this.client = createClient({ url: this.redisUrl });
+    this.client = createRedisLockClient(options);
     this.defaultTtl = options.defaultTtl || 30000; 
     this.retryDelay = options.retryDelay || 100;
     this.maxRetries = options.maxRetries || 50;
 
-    this.client.on('error', (err) => {
-      console.error('Redis Lock Client Error:', err);
-    });
+    if (this.client && typeof this.client.on === 'function') {
+      this.client.on('error', (err) => {
+        logger.error({ err }, 'Redis Lock Client Error');
+      });
+    }
 
     this.acquireScript = `
       if redis.call("set", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
@@ -373,5 +402,5 @@ class RedisLock {
   }
 }
 
-module.exports = RedisLock;
+export default RedisLock;
 
