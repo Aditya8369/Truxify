@@ -3,6 +3,27 @@ import fs from 'fs';
 import path from 'path';
 
 const DEFAULT_STATUS_INDEX_FILE = '.truxify-vc-status-index.json';
+const VERIFICATION_METHOD = 'did:truxify:authority#key-1';
+const PROOF_TYPE = 'Ed25519Signature2020';
+const PROOF_PURPOSE = 'assertionMethod';
+const SIGNED_PROOF_FIELDS = ['type', 'created', 'verificationMethod', 'proofPurpose'];
+
+const canonicalize = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalize).join(',')}]`;
+  }
+
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalize(value[key])}`)
+      .join(',')}}`;
+  }
+
+  return JSON.stringify(value);
+};
+
+const createSignedPayload = (credential, proof) => canonicalize({ credential, proof });
 
 class StatusListIndexStore {
   constructor(filePath) {
@@ -63,18 +84,25 @@ export class W3cCredentialIssuer {
     statusIndexStorePath = process.env.TRUXIFY_VC_STATUS_INDEX_FILE || DEFAULT_STATUS_INDEX_FILE
   ) {
     this.statusIndexStore = new StatusListIndexStore(statusIndexStorePath);
-    if (privateKeyPem) {
-      this.privateKey = crypto.createPrivateKey(privateKeyPem);
-      this.publicKey = crypto.createPublicKey(this.privateKey);
-    } else {
+
+    if (!privateKeyPem) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('TRUXIFY_VC_PRIVATE_KEY is required in production; refusing to generate an ephemeral issuer key.');
+      }
+
       const keyPair = crypto.generateKeyPairSync('ed25519');
       this.privateKey = keyPair.privateKey;
       this.publicKey = keyPair.publicKey;
+      return;
     }
+
+    this.privateKey = crypto.createPrivateKey(privateKeyPem);
+    this.publicKey = crypto.createPublicKey(this.privateKey);
   }
 
   issueDriverCredential(driverId, attributes) {
     const statusListIndex = this.statusIndexStore.allocate();
+    const issuanceDate = new Date().toISOString();
     const vc = {
       "@context": [
         "https://www.w3.org/2018/credentials/v1",
@@ -83,7 +111,7 @@ export class W3cCredentialIssuer {
       "id": `urn:uuid:${crypto.randomUUID()}`,
       "type": ["VerifiableCredential", "DriverLicenseCredential"],
       "issuer": "did:truxify:authority",
-      "issuanceDate": new Date().toISOString(),
+      "issuanceDate": issuanceDate,
       "credentialSubject": {
         "id": `did:truxify:${driverId}`,
         ...attributes
@@ -96,14 +124,21 @@ export class W3cCredentialIssuer {
       }
     };
 
-    const vcString = JSON.stringify(vc);
-    const signature = crypto.sign(null, Buffer.from(vcString), this.privateKey).toString('hex');
+    const signedProof = {
+      "type": PROOF_TYPE,
+      "created": issuanceDate,
+      "verificationMethod": VERIFICATION_METHOD,
+      "proofPurpose": PROOF_PURPOSE
+    };
+
+    const signature = crypto.sign(
+      null,
+      Buffer.from(createSignedPayload(vc, signedProof), 'utf8'),
+      this.privateKey
+    ).toString('hex');
 
     vc.proof = {
-      "type": "Ed25519Signature2020",
-      "created": new Date().toISOString(),
-      "verificationMethod": "did:truxify:authority#key-1",
-      "proofPurpose": "assertionMethod",
+      ...signedProof,
       "proofValue": signature
     };
 
@@ -111,21 +146,35 @@ export class W3cCredentialIssuer {
   }
 
   verifyCredentialProof(vc) {
-    if (!vc || typeof vc !== 'object' || !vc.proof || typeof vc.proof.proofValue !== 'string') {
+    if (!vc || typeof vc !== 'object' || !vc.proof || typeof vc.proof !== 'object') {
       return false;
     }
 
-    const proofValue = vc.proof.proofValue;
-    if (!/^[0-9a-fA-F]{128}$/.test(proofValue)) {
+    const proofKeys = Object.keys(vc.proof).sort();
+    const expectedKeys = [...SIGNED_PROOF_FIELDS, 'proofValue'].sort();
+    if (proofKeys.length !== expectedKeys.length || !proofKeys.every((key, index) => key === expectedKeys[index])) {
+      return false;
+    }
+
+    const { proofValue, type, created, verificationMethod, proofPurpose } = vc.proof;
+    if (
+      typeof proofValue !== 'string' || !/^[0-9a-fA-F]{128}$/.test(proofValue) ||
+      type !== PROOF_TYPE ||
+      typeof created !== 'string' ||
+      verificationMethod !== VERIFICATION_METHOD ||
+      proofPurpose !== PROOF_PURPOSE
+    ) {
       return false;
     }
 
     const credential = { ...vc };
     delete credential.proof;
 
+    const signedProof = { type, created, verificationMethod, proofPurpose };
+
     return crypto.verify(
       null,
-      Buffer.from(JSON.stringify(credential)),
+      Buffer.from(createSignedPayload(credential, signedProof), 'utf8'),
       this.publicKey,
       Buffer.from(proofValue, 'hex')
     );
@@ -134,10 +183,10 @@ export class W3cCredentialIssuer {
   isRevoked(statusListBitstringHex, index) {
     const byteIndex = Math.floor(index / 8);
     const bitOffset = index % 8;
-    
+
     const buffer = Buffer.from(statusListBitstringHex, 'hex');
     if (byteIndex >= buffer.length) return false;
-    
+
     // Check if bit at index is set to 1 (indicating revoked status)
     return (buffer[byteIndex] & (1 << bitOffset)) !== 0;
   }

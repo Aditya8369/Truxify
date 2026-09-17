@@ -63,12 +63,10 @@ describe('TrafficService Enterprise Test Suite (Issue #14108)', () => {
       expect(await trafficService.getLiveTrafficMultiplier({}, [])).toBe(1.0);
     });
 
-    it('returns a valid number between 1.0 and 2.5 when valid coordinates are provided', async () => {
-      // With no API keys, it falls back to rush-hour heuristic
+    it('returns baseline 1.0 (no surge) when no API keys are provided', async () => {
+      // With no API keys, it returns 1.0 without applying mock surge to pricing
       const result = await trafficService.getLiveTrafficMultiplier(28.6139, 77.2090);
-      expect(result).toBeGreaterThanOrEqual(1.0);
-      expect(result).toBeLessThanOrEqual(2.5);
-      expect(Number.isFinite(result)).toBe(true);
+      expect(result).toBe(1.0);
     });
   });
 
@@ -111,7 +109,7 @@ describe('TrafficService Enterprise Test Suite (Issue #14108)', () => {
       global.fetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          flowSegmentData: { speedDiffPercent: 25 } // 25% speed drop
+          flowSegmentData: { speedDiffPercent: -25 } // 25% speed drop
         })
       });
 
@@ -128,7 +126,7 @@ describe('TrafficService Enterprise Test Suite (Issue #14108)', () => {
       global.fetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          flowSegmentData: { speedDiffPercent: 300 } // Extreme drop
+          flowSegmentData: { speedDiffPercent: -300 } // Extreme drop
         })
       });
 
@@ -201,7 +199,10 @@ it('falls back to heuristic when Google API throws network exception', async () 
         json: async () => ({ flowSegmentData: { speedDiffPercent: -30 } }),
       });
       global.fetch = mockFetch;
+      const result = await trafficService.getLiveTrafficMultiplier(23.5, 72.5);
+      expect(result).toBe(1.3);
     });
+  });
 
   describe('Rush-Hour Heuristic (Fallback & Boundaries)', () => {
     // Utility to mock system time to a specific UTC hour
@@ -215,48 +216,48 @@ it('falls back to heuristic when Google API throws network exception', async () 
       vi.useFakeTimers();
     });
 
-    it('returns baseline 1.0 during off-peak night hours (e.g., 3:00 AM UTC)', () => {
-      setMockUTCHour(3);
+    it('returns baseline 1.0 during off-peak night hours (e.g., 3:30 AM IST / 22:00 UTC)', () => {
+      setMockUTCHour(22, 0);
       const mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(1.0);
     });
 
-    it('returns baseline 1.0 during off-peak mid-day hours (e.g., 12:00 PM UTC)', () => {
-      setMockUTCHour(12);
+    it('returns baseline 1.0 during off-peak mid-day hours (e.g., 12:00 PM IST / 6:30 AM UTC)', () => {
+      setMockUTCHour(6, 30);
       const mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(1.0);
     });
 
-    it('returns baseline 1.0 during off-peak late evening hours (e.g., 22:00 UTC)', () => {
-      setMockUTCHour(22);
+    it('returns baseline 1.0 during off-peak late evening hours (e.g., 10:30 PM IST / 17:00 UTC)', () => {
+      setMockUTCHour(17, 0);
       const mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(1.0);
     });
 
-    it('applies scaling surge during Morning Rush boundary (7:00 AM - 10:00 AM UTC)', () => {
-      setMockUTCHour(7, 1); // Hour 7 -> peakHour = 0 -> surge = 1.2
+    it('applies scaling surge during Morning Rush boundary in IST (7:00 AM - 10:00 AM IST)', () => {
+      setMockUTCHour(1, 31); // 7:01 AM IST -> Hour 7 -> peakHour = 0 -> surge = 1.2
       let mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(1.2);
 
-      setMockUTCHour(8, 30); // Hour 8 -> peakHour = 0.33 -> surge = 1.2 + 1.3*sin(60deg) = 2.33
+      setMockUTCHour(3, 0); // 8:30 AM IST -> Hour 8 -> peakHour = 0.33 -> surge = 1.2 + 1.3*sin(60deg) = 2.33
       mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(2.33);
 
-      setMockUTCHour(9, 59); // Hour 9 -> peakHour = 0.66 -> surge = 2.33
+      setMockUTCHour(4, 29); // 9:59 AM IST -> Hour 9 -> peakHour = 0.66 -> surge = 2.33
       mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(2.33);
     });
 
-    it('applies scaling surge during Evening Rush boundary (16:00 - 19:00 UTC)', () => {
-      setMockUTCHour(16, 15); // Hour 16 -> peakHour = 0 -> surge = 1.2
+    it('applies scaling surge during Evening Rush boundary in IST (16:00 - 19:00 IST)', () => {
+      setMockUTCHour(10, 45); // 16:15 IST -> Hour 16 -> peakHour = 0 -> surge = 1.2
       let mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(1.2);
 
-      setMockUTCHour(17, 30); // Hour 17 -> peakHour = 0.33 -> surge = 2.33
+      setMockUTCHour(12, 0); // 17:30 IST -> Hour 17 -> peakHour = 0.33 -> surge = 2.33
       mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(2.33);
 
-      setMockUTCHour(18, 45); // Hour 18 -> peakHour = 0.66 -> surge = 2.33
+      setMockUTCHour(13, 15); // 18:45 IST -> Hour 18 -> peakHour = 0.66 -> surge = 2.33
       mult = trafficService.getRushHourMultiplier(new Date());
       expect(mult).toBe(2.33);
     });
@@ -283,18 +284,12 @@ it('falls back to heuristic when Google API throws network exception', async () 
       
       global.fetch.mockResolvedValueOnce({
         ok: true,
-it('handles deeply nested missing fields in Google Maps API responses', async () => {
-      process.env.GOOGLE_MAPS_API_KEY = 'mock_google_key_corrupt';
-      delete process.env.TOMTOM_API_KEY;
-      
-      global.fetch.mockResolvedValueOnce({
-        ok: true,
         json: async () => ({ routes: [ { legs: [ {} ] } ] }) // strictly missing duration fields
       });
       
       const result = await trafficService.getLiveTrafficMultiplier(28.6, 77.2);
       
-      // Should default to 1.0 or heuristic safely without throwing TypeError
+      // Should default to 1.0 safely without throwing TypeError
       expect(result).toBeGreaterThanOrEqual(1.0);
       expect(result).toBeLessThanOrEqual(2.5);
       expect(Number.isFinite(result)).toBe(true);

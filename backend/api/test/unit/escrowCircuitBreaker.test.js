@@ -42,15 +42,40 @@ describe('escrowCircuitBreaker Unit Tests', () => {
       redisMock.get.mockResolvedValue(null);
       expect(await isEscrowPaused()).toBe(false);
 
-  it('isEscrowPaused fails closed when Redis is unavailable', async () => {
+  it('isEscrowPaused fails closed when a Redis read throws (outage = paused)', async () => {
     redisMock.get.mockRejectedValue(new Error('down'));
     expect(await isEscrowPaused()).toBe(true);
   });
 
-    it('isEscrowPaused fails open when Redis throws an error', async () => {
-      redisMock.get.mockRejectedValue(new Error('Redis connection lost'));
-      expect(await isEscrowPaused()).toBe(false);
-    });
+  // Uses a scoped re-mock (vi.doMock + fresh module graph) so redisClient can be
+  // null without disturbing the shared redisMock used by the rest of this file.
+  it('isEscrowPaused fails closed when no Redis client is configured', async () => {
+    vi.resetModules();
+    vi.doMock('../../src/middleware/logger.js', () => ({
+      default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+    }));
+    vi.doMock('../../src/config/db.js', () => ({ redisClient: null }));
+    try {
+      const { isEscrowPaused: isEscrowPausedWithoutClient } = await import(
+        '../../src/services/escrowCircuitBreaker.js'
+      );
+      expect(await isEscrowPausedWithoutClient()).toBe(true);
+    } finally {
+      vi.doUnmock('../../src/config/db.js');
+      vi.doUnmock('../../src/middleware/logger.js');
+      vi.resetModules();
+    }
+  });
+
+  it('setEscrowPaused(true) opens the circuit and persists a timestamp', async () => {
+    const before = Date.now();
+    const result = await setEscrowPaused(true);
+    expect(result.paused).toBe(true);
+    expect(result.persisted).toBe(true);
+    expect(new Date(result.updatedAt).getTime()).toBeGreaterThanOrEqual(before);
+    expect(redisMock.set).toHaveBeenCalledWith('escrow:circuit-breaker:paused', '1');
+    expect(redisMock.set).toHaveBeenCalledWith('escrow:circuit-breaker:paused-at', result.updatedAt);
+  });
 
     it('setEscrowPaused(true) opens the circuit and persists pause flag and timestamp', async () => {
       const before = Date.now();

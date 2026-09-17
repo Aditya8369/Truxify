@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+
+import logger from '../../src/middleware/logger.js';
 
 vi.mock('../../src/middleware/logger.js', () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
@@ -62,18 +64,28 @@ function buildApp() {
 }
 
 const VALID_KEY = 'internal-test-key';
+// The dedicated escrow operator key. Per the documented configuration it is
+// also listed in VALID_API_KEYS, because requireApiKey authenticates it
+// before the route-level operator check runs.
+const OPERATOR_KEY = 'escrow-operator-test-key';
 
 /**
  * Mirrors the real mount in src/index.js:
  *
  *   app.use('/api/internal', requireApiKey, internalRoutes)
  *
- * so the auth assertions below exercise the middleware that actually guards
- * these routes in production rather than a stand-in.
+ * together with the documented operator configuration (the dedicated key is
+ * listed in VALID_API_KEYS and designated via ESCROW_OPERATOR_API_KEY), so
+ * the auth assertions below exercise the middleware chain that actually
+ * guards these routes in production rather than a stand-in.
  */
-function buildGuardedApp(keys = VALID_KEY, operatorKey = VALID_KEY) {
-  process.env.VALID_API_KEYS = keys;
-  process.env.ESCROW_OPERATOR_API_KEYS = operatorKey;
+function buildGuardedApp({ operatorConfigured = true } = {}) {
+  process.env.VALID_API_KEYS = `${VALID_KEY},${OPERATOR_KEY}`;
+  if (operatorConfigured) {
+    process.env.ESCROW_OPERATOR_API_KEY = OPERATOR_KEY;
+  } else {
+    delete process.env.ESCROW_OPERATOR_API_KEY;
+  }
   authConfig.reload();
   const app = express();
   app.use(express.json());
@@ -119,6 +131,13 @@ describe('GET /api/internal/escrow-velocity', () => {
 describe('POST /api/internal/pause-escrow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // These route-logic tests exercise the handler directly (no requireApiKey
+    // mount); unpause tests below present the operator key itself.
+    process.env.ESCROW_OPERATOR_API_KEY = OPERATOR_KEY;
+  });
+
+  afterEach(() => {
+    delete process.env.ESCROW_OPERATOR_API_KEY;
   });
 
   it('opens the circuit when no body is supplied (defaults to paused)', async () => {
@@ -156,10 +175,12 @@ describe('POST /api/internal/pause-escrow', () => {
     expect(res.body.onChain.txHash).toBe('0xabc');
   });
 
-  it('closes the circuit for paused:false', async () => {
+  it('closes the circuit for paused:false when the operator key is presented', async () => {
     circuitBreakerMock.setEscrowPaused.mockResolvedValue({ paused: false, updatedAt: 't', persisted: true });
-    escrowServiceMock.setEscrowContractPaused.mockResolvedValue({ success: true, txHash: '0xabc' });
-    const res = await request(buildApp()).post('/api/internal/pause-escrow').send({ paused: false });
+    const res = await request(buildApp())
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', OPERATOR_KEY)
+      .send({ paused: false });
     expect(circuitBreakerMock.setEscrowPaused).toHaveBeenCalledWith(false);
     expect(escrowServiceMock.setEscrowContractPaused).toHaveBeenCalledWith(false);
     expect(res.status).toBe(200);
@@ -206,10 +227,12 @@ describe('POST /api/internal/pause-escrow', () => {
     expect(res.body.error).toContain('Failed to update escrow circuit breaker');
   });
 
-  it('closes the circuit for a stringified "false" body', async () => {
+  it('closes the circuit for a stringified "false" body when the operator key is presented', async () => {
     circuitBreakerMock.setEscrowPaused.mockResolvedValue({ paused: false, updatedAt: 't', persisted: true });
-    escrowServiceMock.setEscrowContractPaused.mockResolvedValue({ success: true, txHash: '0xabc' });
-    const res = await request(buildApp()).post('/api/internal/pause-escrow').send({ paused: 'false' });
+    const res = await request(buildApp())
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', OPERATOR_KEY)
+      .send({ paused: 'false' });
     expect(circuitBreakerMock.setEscrowPaused).toHaveBeenCalledWith(false);
     expect(escrowServiceMock.setEscrowContractPaused).toHaveBeenCalledWith(false);
     expect(res.status).toBe(200);
@@ -224,6 +247,138 @@ describe('POST /api/internal/pause-escrow', () => {
 
     expect(res.status).toBe(403);
     expect(circuitBreakerMock.setEscrowPaused).not.toHaveBeenCalled();
+  });
+});
+
+// Closing the circuit re-enables on-chain escrow submissions, so the unpause
+// direction is gated on a dedicated operator key on top of requireApiKey.
+describe('POST /api/internal/pause-escrow operator authorization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // velocityResults is shared module state seeded by the escrow-velocity
+    // tests above; clear it so the telemetry check below sees a clean window.
+    delete velocityResults['escrow_deposited_at'];
+    delete velocityResults['escrow_released_at'];
+    delete velocityResults['escrow_refunded_at'];
+    circuitBreakerMock.getPauseState.mockResolvedValue({ paused: false, pausedAt: null });
+    circuitBreakerMock.setEscrowPaused.mockResolvedValue({
+      paused: false,
+      updatedAt: '2026-09-16T00:00:00.000Z',
+      persisted: true,
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.ESCROW_OPERATOR_API_KEY;
+  });
+
+  it('answers 403 and leaves the breaker untouched when a normal internal API key unpauses', async () => {
+    const res = await request(buildGuardedApp())
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', VALID_KEY)
+      .send({ paused: false });
+
+    expect(res.status).toBe(403);
+    expect(circuitBreakerMock.setEscrowPaused).not.toHaveBeenCalled();
+  });
+
+  it('answers 403 for a stringified "false" body from a normal internal API key', async () => {
+    const res = await request(buildGuardedApp())
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', VALID_KEY)
+      .send({ paused: 'false' });
+
+    expect(res.status).toBe(403);
+    expect(circuitBreakerMock.setEscrowPaused).not.toHaveBeenCalled();
+  });
+
+  it('closes the circuit when the dedicated operator key unpauses', async () => {
+    const res = await request(buildGuardedApp())
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', OPERATOR_KEY)
+      .send({ paused: false });
+
+    expect(res.status).toBe(200);
+    expect(circuitBreakerMock.setEscrowPaused).toHaveBeenCalledWith(false);
+    expect(res.body).toEqual({
+      paused: false,
+      updatedAt: '2026-09-16T00:00:00.000Z',
+      persisted: true,
+    });
+  });
+
+  it('keeps opening the circuit available to a normal internal API key (paused:true)', async () => {
+    circuitBreakerMock.setEscrowPaused.mockResolvedValue({ paused: true, updatedAt: 't', persisted: true });
+
+    const res = await request(buildGuardedApp())
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', VALID_KEY)
+      .send({ paused: true });
+
+    expect(res.status).toBe(200);
+    expect(circuitBreakerMock.setEscrowPaused).toHaveBeenCalledWith(true);
+    expect(res.body.paused).toBe(true);
+  });
+
+  it('keeps telemetry readable by a normal internal API key', async () => {
+    const res = await request(buildGuardedApp())
+      .get('/api/internal/escrow-velocity')
+      .set('x-api-key', VALID_KEY);
+
+    expect(res.status).toBe(200);
+    expect(res.body.isAnomalyDetected).toBe(false);
+  });
+
+  it('fails closed with 403 when ESCROW_OPERATOR_API_KEY is not configured', async () => {
+    const res = await request(buildGuardedApp({ operatorConfigured: false }))
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', VALID_KEY)
+      .send({ paused: false });
+
+    expect(res.status).toBe(403);
+    expect(circuitBreakerMock.setEscrowPaused).not.toHaveBeenCalled();
+  });
+
+  it('fails closed even when the unconfigured operator key value is presented', async () => {
+    // The key value is still in VALID_API_KEYS (so requireApiKey admits it),
+    // but with the operator designation gone nothing may unpause.
+    const res = await request(buildGuardedApp({ operatorConfigured: false }))
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', OPERATOR_KEY)
+      .send({ paused: false });
+
+    expect(res.status).toBe(403);
+    expect(circuitBreakerMock.setEscrowPaused).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 and leaves the breaker untouched when the API key is missing', async () => {
+    const res = await request(buildGuardedApp())
+      .post('/api/internal/pause-escrow')
+      .send({ paused: false });
+
+    expect(res.status).toBe(401);
+    expect(circuitBreakerMock.setEscrowPaused).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 and leaves the breaker untouched when the API key is invalid', async () => {
+    const res = await request(buildGuardedApp())
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', 'not-the-key')
+      .send({ paused: false });
+
+    expect(res.status).toBe(401);
+    expect(circuitBreakerMock.setEscrowPaused).not.toHaveBeenCalled();
+  });
+
+  it('never leaks the raw operator key into the auth-failure log', async () => {
+    await request(buildGuardedApp())
+      .post('/api/internal/pause-escrow')
+      .set('x-api-key', VALID_KEY)
+      .send({ paused: false });
+
+    for (const call of logger.warn.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain(OPERATOR_KEY);
+    }
   });
 });
 

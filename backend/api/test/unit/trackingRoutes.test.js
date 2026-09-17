@@ -58,8 +58,11 @@ const buildOrderChain = (data, error) => ({
 
 const buildInsertChain = (data, error) => ({
   insert: vi.fn().mockReturnThis(),
+  update: vi.fn().mockReturnThis(),
+  eq: vi.fn().mockReturnThis(),
   select: vi.fn().mockReturnThis(),
   single: vi.fn(async () => ({ data, error })),
+  then: (resolve) => resolve({ data, error }),
 })
 
 import trackingRoutes from '../../src/routes/trackingRoutes.js'
@@ -71,6 +74,7 @@ app.use('/api/orders', trackingRoutes)
 describe('POST /api/orders/:id/share-tracking', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    process.env.PUBLIC_TRACKING_URL = 'https://track.truxify.com'
   })
 
   it('runs the order pre-check and token creation through createUserClient(req.token)', async () => {

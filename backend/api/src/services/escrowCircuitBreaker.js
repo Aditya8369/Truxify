@@ -9,8 +9,11 @@
  * state. All on-chain escrow submissions in services/escrow.js consult
  * isEscrowPaused() before building/sending a transaction.
  *
- * Fail-closed semantics: if Redis is unreachable the pause state cannot be
- * verified, so new escrow submissions are blocked until state is readable.
+ * Fail-closed semantics: the pause flag is an emergency control. If Redis is
+ * unreachable (or the read throws), the pause state cannot be confirmed, so
+ * isEscrowPaused() treats the state as PAUSED and on-chain escrow submissions
+ * are refused. Operators must restore/verify Redis and the pause state before
+ * normal escrow operation resumes.
  */
 
 import logger from '../middleware/logger.js';
@@ -29,6 +32,11 @@ const PAUSE_KEY = 'escrow:circuit-breaker:paused';
 const PAUSED_AT_KEY = 'escrow:circuit-breaker:paused-at';
 
 /**
+ * Whether the escrow circuit breaker is open. This is an emergency control:
+ * when the Redis-backed pause state cannot be read (Redis unavailable or the
+ * read fails), the state is treated as paused — escrow submissions fail closed
+ * until Redis is restored and the pause state is verified.
+ *
  * @returns {Promise<boolean>} — true when the escrow circuit breaker is open
  */
 export async function isEscrowPaused() {
@@ -41,7 +49,7 @@ export async function isEscrowPaused() {
   } catch (err) {
     logger.error(
       { err: err?.message ?? String(err), event: 'ESCROW_CIRCUIT_BREAKER_READ_ERROR' },
-      '[escrow-circuit-breaker] Failed to read pause flag from Redis — failing closed.'
+      '[escrow-circuit-breaker] Failed to read pause flag from Redis — failing closed (treating as paused).'
     );
     return true;
   }

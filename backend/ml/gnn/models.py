@@ -44,6 +44,9 @@ class GNNRouteModel(nn.Module):
         self.conv3 = SAGEConv(hidden_dim * 4, hidden_dim)
         
         
+        # Attention mechanism
+        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=8)
+        
         # Output layers
         self.lin1 = nn.Linear(hidden_dim, output_dim)
         self.lin2 = nn.Linear(output_dim, 1)
@@ -106,7 +109,18 @@ class GraphNetworkBuilder:
         self.edge_features = {}
         
     def build_road_network(self, nodes, edges):
-        """Build road network from nodes and directed source-to-target edges."""
+        """Build road network after validating every edge endpoint."""
+        node_ids = {node['id'] for node in nodes}
+        for edge in edges:
+            source = edge['source']
+            target = edge['target']
+            missing_endpoints = [
+                node_id for node_id in (source, target) if node_id not in node_ids
+            ]
+            if missing_endpoints:
+                missing = ', '.join(dict.fromkeys(missing_endpoints))
+                raise ValueError(f"Unknown edge endpoint(s): {missing}")
+
         # Add nodes
         for node in nodes:
             self.graph.add_node(
@@ -205,21 +219,36 @@ class GraphNetworkBuilder:
 class RouteOptimizer:
     """GNN-based Route Optimizer"""
     
-    def __init__(self, model_path=None):
+    def __init__(self, model_path=None, allow_untrained=False):
         """Initialize RouteOptimizer with GNNRouteModel and hardware acceleration device."""
         self.model = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.is_trained = False
+        self.allow_untrained = allow_untrained
         
         if model_path:
             self.load_model(model_path)
         else:
             self.model = GNNRouteModel().to(self.device)
+            if self.allow_untrained:
+                logger.info("Route Optimizer initialized with untrained weights (dev mode allowed)")
+            else:
+                logger.warning("Route Optimizer initialized without trained weights. Call train() or load_model() before serving.")
         
         logger.info(f"✅ Route Optimizer initialized on {self.device}")
     
     def optimize_route(self, start_node, end_node, graph_data, objectives=['time', 'cost', 'fuel'], constraints=None):
         """Optimize route using GNN and constrained Dijkstra pathfinding."""
+        if not self.is_trained and not self.allow_untrained:
+            logger.error("Attempted route optimization on untrained model")
+            raise RuntimeError("GNN model is untrained. Load a trained checkpoint or enable dev mode.")
+
         try:
+            # Check node presence in graph
+            if not hasattr(graph_data, 'graph') or start_node not in graph_data.graph or end_node not in graph_data.graph:
+                logger.warning(f"Start ({start_node}) or End ({end_node}) node not found in graph")
+                return None
+
             # Convert to PyTorch Geometric
             data = graph_data.to(self.device)
 
@@ -250,6 +279,8 @@ class RouteOptimizer:
 
             return self._build_route_result(route)
             
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.error(f"Route optimization failed: {e}")
             return None
@@ -401,22 +432,28 @@ class RouteOptimizer:
         # Non-negative weight guard for Dijkstra
         return max(score, 1e-6)
     
-    def train(self, train_data, val_data=None, epochs=100, learning_rate=0.001):
+    def train(self, train_data, val_data=None, epochs=100):
         """Train GNN model"""
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         criterion = nn.MSELoss()
         
+        avg_loss = 0.0
         for epoch in range(epochs):
             self.model.train()
-            total_loss = 0
+            total_loss = 0.0
             
             for data in train_data:
                 data = data.to(self.device)
                 optimizer.zero_grad()
                 
                 # Forward pass
-                out = self.model(data.x, data.edge_index, data.edge_attr, data.batch)
-                loss = criterion(out, data.y)
+                batch = getattr(data, 'batch', None)
+                edge_attr = getattr(data, 'edge_attr', None)
+                out = self.model(data.x, data.edge_index, edge_attr, batch)
+                target = getattr(data, 'y', None)
+                if target is None:
+                    target = torch.zeros_like(out)
+                loss = criterion(out, target)
                 
                 # Backward pass
                 loss.backward()
@@ -429,6 +466,8 @@ class RouteOptimizer:
             if epoch % 10 == 0:
                 logger.info(f"Epoch {epoch}: Loss = {avg_loss:.4f}")
         
+        self.is_trained = True
+        self.model.eval()
         return avg_loss
     
     def save_model(self, path='models/gnn_route.pth'):
@@ -439,29 +478,26 @@ class RouteOptimizer:
     def load_model(self, path='models/gnn_route.pth'):
         """Load GNN model"""
         self.model = GNNRouteModel().to(self.device)
-        state_dict = torch.load(path, map_location=self.device)
-        for key in list(state_dict):
-            if key.startswith('attention.'):
-                del state_dict[key]
-        self.model.load_state_dict(state_dict)
+        self.model.load_state_dict(torch.load(path, map_location=self.device))
         self.model.eval()
+        self.is_trained = True
         logger.info(f"✅ Model loaded from {path}")
 
     def _edge_is_feasible(self, edge_data, constraints):
         """Return whether an edge satisfies the active hard route constraints."""
         if constraints.get('hazmat', False) and not edge_data.get('hazmat_allowed', True):
             return False
-
+        
         truck_weight = constraints.get('truck_weight') or constraints.get('weight')
         max_weight = edge_data.get('max_weight') or edge_data.get('weight_limit')
         if truck_weight is not None and max_weight is not None and truck_weight > max_weight:
             return False
-
+        
         truck_height = constraints.get('truck_height') or constraints.get('height')
         max_height = edge_data.get('max_height') or edge_data.get('height_limit')
         if truck_height is not None and max_height is not None and truck_height > max_height:
             return False
-
+        
         return True
 
     def _route_result_for_path(self, path, graph_data):
@@ -521,7 +557,7 @@ class RouteOptimizer:
         while queue:
             current_values, current_time, current_path = heapq.heappop(queue)
             current_node = current_path[-1]
-
+            
             if current_node != end:
                 for neighbor in graph_data.graph.neighbors(current_node):
                     if neighbor in current_path:
@@ -577,19 +613,12 @@ class RouteOptimizer:
         """Return a representative route together with the exact Pareto frontier."""
         objectives = ['time', 'cost', 'fuel']
         frontier = self._find_pareto_routes(start, end, graph_data, objectives, constraints)
-
         if not frontier:
             return None
-
         weights = {'time': 0.5, 'cost': 0.3, 'fuel': 0.2}
-        best_route = min(
-            frontier,
-            key=lambda candidate: sum(
-                weights[objective] * candidate[f'total_{objective}']
-                for objective in objectives
-            )
-        )
-
+        best_route = min(frontier, key=lambda candidate: sum(
+            weights[objective] * candidate[f'total_{objective}'] for objective in objectives
+        ))
         result = dict(best_route)
         result['pareto_routes'] = frontier
         result['pareto_count'] = len(frontier)
@@ -600,29 +629,24 @@ class RouteOptimizer:
         """Apply traffic updates and reroute through the current road network."""
         if not current_route:
             return current_route
-
         if graph_data is None or not hasattr(graph_data, 'graph'):
             logger.warning("Real-time rerouting requires graph_data; returning the updated current route")
             updated_route = [dict(edge) for edge in current_route]
             self._apply_traffic_to_route(updated_route, new_traffic_data)
             return updated_route
-
         graph = graph_data.graph.copy()
         edge_lookup = {}
         for u, v in graph.edges:
             edge_lookup[f"{u}-{v}"] = (u, v)
             edge_lookup[f"{v}-{u}"] = (u, v)
-
         changed = False
         updated_route = [dict(edge) for edge in current_route]
         for edge_id, update in new_traffic_data.items():
             if not isinstance(update, dict):
                 continue
-
             endpoints = edge_lookup.get(edge_id)
             if endpoints is None:
                 continue
-
             u, v = endpoints
             edge_attrs = graph[u][v]
             for field in ('time', 'cost', 'fuel', 'congestion'):
@@ -631,12 +655,9 @@ class RouteOptimizer:
                     if edge_attrs.get(field) != value:
                         edge_attrs[field] = value
                         changed = True
-
         self._apply_traffic_to_route(updated_route, new_traffic_data)
-
         if not changed:
             return updated_route
-
         builder = GraphNetworkBuilder()
         nodes = [
             {
@@ -666,18 +687,13 @@ class RouteOptimizer:
         ]
         builder.build_road_network(nodes, edges)
         updated_graph_data = builder.get_pytorch_data()
-
         start = current_route[0].get('from')
         end = current_route[-1].get('to')
         if start is None or end is None:
             return updated_route
-
         rerouted = self._reoptimize(
-            start,
-            end,
-            updated_graph_data,
-            objectives or ['time', 'cost', 'fuel'],
-            constraints
+            start, end, updated_graph_data,
+            objectives or ['time', 'cost', 'fuel'], constraints
         )
         return rerouted if rerouted is not None else updated_route
 
