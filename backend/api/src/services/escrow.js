@@ -314,12 +314,41 @@ export async function checkEscrowHealth() {
 }
 
 /**
- * Derive a deterministic booking ID from an order's display ID.
- * @param {string} orderDisplayId — e.g. "#FF20260521"
- * @returns {string} bytes32 hex string
+ * Retrieves a full escrow booking record by its ID.
+ * Used by the funding reconciliation sweeper to verify on-chain deposits.
+ * Resolves Issue #7340.
+ * 
+ * @param {string} escrowBookingId - The UUID of the escrow booking
+ * @returns {Promise<object|null>} The booking record or null if not found
+ * @throws {Error} If database query fails
  */
-export function getEscrowBookingId (orderDisplayId) {
-  return ethers.solidityPackedKeccak256(['string'], [`escrow:${orderDisplayId}`])
+export async function getEscrowBooking(escrowBookingId) {
+  if (!escrowBookingId || typeof escrowBookingId !== 'string' || !escrowBookingId.trim()) {
+    return null;
+  }
+
+  if (!supabaseAdmin) {
+    logger.error('supabaseAdmin not configured for getEscrowBooking');
+    return null;
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('escrow_bookings')
+      .select('*')
+      .eq('id', escrowBookingId.trim())
+      .maybeSingle();
+
+    if (error) {
+      logger.error({ err: error, escrowBookingId }, 'Failed to fetch escrow booking');
+      throw error;
+    }
+
+    return data;
+  } catch (err) {
+    logger.error({ err, escrowBookingId }, 'Unexpected error in getEscrowBooking');
+    throw err;
+  }
 }
 
 /**

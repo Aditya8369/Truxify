@@ -14,6 +14,7 @@ vi.mock('../../src/middleware/auth.js', () => ({
     req.user = currentUser;
     next();
   }),
+  requireRole: vi.fn(() => (_req, _res, next) => next()),
 }));
 
 vi.mock('../../src/middleware/rateLimiter.js', () => ({
@@ -39,6 +40,9 @@ vi.mock('../../src/controllers/deviceController.js', () => ({
   ),
   getDevicePlatforms: vi.fn((req, res) =>
     res.status(200).json({ platforms: ['android', 'ios'] })
+  ),
+  pruneDevices: vi.fn((req, res) =>
+    res.status(200).json({ success: true, pruned: 0 })
   ),
 }));
 

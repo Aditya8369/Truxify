@@ -55,8 +55,8 @@ export async function getLiveTrafficMultiplier(pickupLat, pickupLng) {
         }
       }
     } else {
-      // No traffic API key -- fall back to a deterministic rush-hour multiplier.
-      multiplier = getRushHourMultiplier(new Date());
+      // No traffic API key -- return baseline 1.0 (no mock surge applied to pricing).
+      multiplier = 1.0;
     }
 
     if (multiplier > 1.0) {
@@ -120,8 +120,9 @@ export async function getLiveTrafficMultiplierEnterprise(lat, lng) {
   const nLat = Number(lat);
   const nLng = Number(lng);
 
-  // Issue #14108: Explicit early null-guards
-  if (lat == null || lng == null || Number.isNaN(nLat) || Number.isNaN(nLng)) {
+  // Issue #13581: reject non-finite coordinates (NaN, ±Infinity) before any
+  // distance/duration calculation so invalid results never reach responses.
+  if (lat == null || lng == null || !Number.isFinite(nLat) || !Number.isFinite(nLng)) {
     logger.warn('[TrafficService] Invalid coordinates provided, returning default multiplier (1.0).');
     return 1.0;
   }

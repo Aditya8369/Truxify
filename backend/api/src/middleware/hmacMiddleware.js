@@ -1,6 +1,6 @@
 import hmacService from '../services/hmacService.js';
 
-export const hmacAuth = (req, res, next) => {
+export const hmacAuth = async (req, res, next) => {
   const signature = req.headers['x-hmac-signature'];
   const timestamp = req.headers['x-timestamp'];
   const nonce = req.headers['x-nonce'];
@@ -13,10 +13,6 @@ export const hmacAuth = (req, res, next) => {
     return res.status(401).json({ error: 'Request timestamp expired or invalid' });
   }
 
-  if (!hmacService.isNonceValid(nonce)) {
-    return res.status(401).json({ error: 'Nonce already used (replay attack detected)' });
-  }
-
   const payload = (req.method === 'GET' || req.method === 'DELETE')
     ? (req.originalUrl.split('?')[1] || '')
     : JSON.stringify(req.body);
@@ -27,7 +23,15 @@ export const hmacAuth = (req, res, next) => {
     return res.status(403).json({ error: 'Invalid HMAC signature' });
   }
 
-  next();
+  try {
+    if (!await hmacService.isNonceValid(nonce)) {
+      return res.status(401).json({ error: 'Nonce already used (replay attack detected)' });
+    }
+  } catch {
+    return res.status(503).json({ error: 'HMAC replay protection is unavailable' });
+  }
+
+  return next();
 };
 
 export default hmacAuth;

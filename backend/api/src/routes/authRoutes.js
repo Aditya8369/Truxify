@@ -261,6 +261,57 @@ const verifyOtpSchema = z.object({
   otp: z.string().regex(/^\d{6}$/, "OTP must be 6 digits"),
 }).strict();
 
+import { requestOtp } from '../services/otpService.js';
+
+/**
+ * POST /api/auth/request-otp
+ * Generates and delivers an OTP for phone number verification.
+ * Resolves Issue #10471 - the producer half of the OTP flow.
+ */
+router.post('/request-otp', 
+  rateLimit({ 
+    windowMs: 15 * 60 * 1000, 
+    max: 10,
+    message: 'Too many OTP requests from this IP'
+  }),
+  async (req, res) => {
+    try {
+      const { phone, channel, purpose } = req.body;
+
+      if (!phone) {
+        return res.status(400).json({ 
+          error: 'INVALID_REQUEST',
+          message: 'phone is required' 
+        });
+      }
+
+      const result = await requestOtp(phone, { channel, purpose });
+
+      if (!result.success) {
+        const statusCode = result.error === 'RATE_LIMIT_EXCEEDED' ? 429 : 400;
+        return res.status(statusCode).json({
+          error: result.error,
+          message: result.message,
+          retryAfter: result.retryAfter
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        otpId: result.otpId,
+        expiresAt: result.expiresAt,
+        ttlMinutes: result.ttlMinutes
+      });
+    } catch (err) {
+      logger.error({ err }, 'request-otp handler error');
+      return res.status(500).json({ 
+        error: 'INTERNAL_ERROR',
+        message: 'Failed to process OTP request'
+      });
+    }
+  }
+);
+
 /**
  * @openapi
  * /api/auth/verify-otp:

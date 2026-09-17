@@ -149,4 +149,18 @@ describe('reputation.js - Advanced Service & Validation Edge Cases', () => {
     await expect(simulateRpcTimeout(false)).resolves.toBe(100);
     await expect(simulateRpcTimeout(true)).rejects.toThrow('RPC timeout');
   });
+
+  it('handles options object with awardKey and existingTxHash gracefully', async () => {
+    // When reputationContract is null, awardReputationPoints returns undefined safely without throwing
+    const result = await awardReputationPoints('0x1234567890123456789012345678901234567890', 5, {
+      awardKey: 'test:award:1',
+      existingTxHash: '0xabcdef',
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it('handles string awardKey option gracefully', async () => {
+    const result = await awardReputationPoints('0x1234567890123456789012345678901234567890', 5, 'test:award:2');
+    expect(result).toBeUndefined();
+  });
 });
