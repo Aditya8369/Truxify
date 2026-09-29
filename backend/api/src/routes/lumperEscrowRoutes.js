@@ -118,8 +118,20 @@ router.post('/release', authenticate, userLimiter, async (req, res) => {
       escrow: releasedEscrow
     });
   } catch (err) {
-    const status = err.message?.includes('not found') ? 404 : 500;
-    return res.status(status).json({ error: err.message || 'Failed to process lumper receipt release' });
+    if (err.message?.includes('not found')) {
+      return res.status(404).json({ error: err.message });
+    }
+    if (err.message?.includes('already released')) {
+      return res.status(409).json({ error: err.message });
+    }
+    if (
+      err.message?.includes('cannot exceed') ||
+      err.message?.includes('positive number') ||
+      err.message?.includes('required')
+    ) {
+      return res.status(400).json({ error: err.message });
+    }
+    return res.status(500).json({ error: err.message || 'Failed to process lumper receipt release' });
   }
 });
 

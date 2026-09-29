@@ -113,11 +113,11 @@ describe('LumperEscrowService', () => {
         escrowId: activeEscrow.escrowId,
         driverWallet,
         receiptImageUrl,
-        claimedAmount: 195,
+        claimedAmount: 160,
       });
 
       expect(released.status).toBe('RELEASED');
-      expect(released.releasedAmount).toBe(195);
+      expect(released.releasedAmount).toBe(160);
       expect(released.driverWallet).toBe(driverWallet);
       expect(released.receiptImageUrl).toBe(receiptImageUrl);
       expect(released.releaseTxHash).toMatch(/^0x[0-9a-f]{64}$/);
@@ -125,7 +125,81 @@ describe('LumperEscrowService', () => {
 
       const stored = await service.getEscrowStatus(activeEscrow.escrowId);
       expect(stored.status).toBe('RELEASED');
-      expect(stored.releasedAmount).toBe(195);
+      expect(stored.releasedAmount).toBe(160);
+    });
+
+    it('rejects claimedAmount that exceeds the estimated escrow amount', async () => {
+      await expect(
+        service.processReceiptAndRelease({
+          escrowId: activeEscrow.escrowId,
+          driverWallet: '0xDriverWallet789',
+          receiptImageUrl: 'https://s3.truxify.com/receipts/rec-01.jpg',
+          claimedAmount: 195,
+        })
+      ).rejects.toThrow('claimedAmount cannot exceed the estimated escrow amount');
+    });
+
+    it('rejects release when driverWallet is missing or empty', async () => {
+      await expect(
+        service.processReceiptAndRelease({
+          escrowId: activeEscrow.escrowId,
+          receiptImageUrl: 'https://s3.truxify.com/receipts/rec-01.jpg',
+        })
+      ).rejects.toThrow('driverWallet is required');
+
+      await expect(
+        service.processReceiptAndRelease({
+          escrowId: activeEscrow.escrowId,
+          driverWallet: '   ',
+          receiptImageUrl: 'https://s3.truxify.com/receipts/rec-01.jpg',
+        })
+      ).rejects.toThrow('driverWallet is required');
+    });
+
+    it('rejects release when receiptImageUrl is missing or empty', async () => {
+      await expect(
+        service.processReceiptAndRelease({
+          escrowId: activeEscrow.escrowId,
+          driverWallet: '0xDriverWallet789',
+        })
+      ).rejects.toThrow('receiptImageUrl is required');
+
+      await expect(
+        service.processReceiptAndRelease({
+          escrowId: activeEscrow.escrowId,
+          driverWallet: '0xDriverWallet789',
+          receiptImageUrl: '',
+        })
+      ).rejects.toThrow('receiptImageUrl is required');
+    });
+
+    it('rejects release when claimedAmount is zero, negative, or non-numeric', async () => {
+      await expect(
+        service.processReceiptAndRelease({
+          escrowId: activeEscrow.escrowId,
+          driverWallet: '0xDriverWallet789',
+          receiptImageUrl: 'https://s3.truxify.com/receipts/rec-01.jpg',
+          claimedAmount: 0,
+        })
+      ).rejects.toThrow('claimedAmount must be a positive number');
+
+      await expect(
+        service.processReceiptAndRelease({
+          escrowId: activeEscrow.escrowId,
+          driverWallet: '0xDriverWallet789',
+          receiptImageUrl: 'https://s3.truxify.com/receipts/rec-01.jpg',
+          claimedAmount: -10,
+        })
+      ).rejects.toThrow('claimedAmount must be a positive number');
+
+      await expect(
+        service.processReceiptAndRelease({
+          escrowId: activeEscrow.escrowId,
+          driverWallet: '0xDriverWallet789',
+          receiptImageUrl: 'https://s3.truxify.com/receipts/rec-01.jpg',
+          claimedAmount: 'invalid',
+        })
+      ).rejects.toThrow('claimedAmount must be a positive number');
     });
 
     it('falls back to estimatedFeeAmount when claimedAmount is omitted', async () => {
