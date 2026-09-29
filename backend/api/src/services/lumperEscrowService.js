@@ -45,6 +45,14 @@ class LumperEscrowService {
       throw new Error('Lumper fee escrow not found');
     }
 
+    if (!driverWallet || typeof driverWallet !== 'string' || !driverWallet.trim()) {
+      throw new Error('driverWallet is required');
+    }
+
+    if (!receiptImageUrl || typeof receiptImageUrl !== 'string' || !receiptImageUrl.trim()) {
+      throw new Error('receiptImageUrl is required');
+    }
+
     const escrow = this.escrows.get(escrowId);
 
     if (escrow.status === 'RELEASED') {
@@ -52,7 +60,7 @@ class LumperEscrowService {
     }
     
     // Simulate AI parsing validation
-const parsedAmount = claimedAmount !== undefined && claimedAmount !== null
+    const parsedAmount = claimedAmount !== undefined && claimedAmount !== null
       ? Number(claimedAmount)
       : escrow.estimatedFeeAmount;
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
@@ -64,8 +72,8 @@ const parsedAmount = claimedAmount !== undefined && claimedAmount !== null
     
     escrow.status = 'RELEASED';
     escrow.releasedAmount = parsedAmount;
-    escrow.driverWallet = driverWallet;
-    escrow.receiptImageUrl = receiptImageUrl;
+    escrow.driverWallet = driverWallet.trim();
+    escrow.receiptImageUrl = receiptImageUrl.trim();
     escrow.releaseTxHash = `0x${Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('')}`;
     escrow.releasedAt = new Date().toISOString();
 

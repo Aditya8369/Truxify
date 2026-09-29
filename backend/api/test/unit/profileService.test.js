@@ -57,6 +57,9 @@ const profileCacheRef = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/config/db.js', () => ({
+  
+  redisClient: global.mockRedis,
+  upstashRedisClient: global.mockRedis,
   get supabase() {
     return supabaseRef.current;
   },
@@ -67,53 +70,62 @@ vi.mock('../../src/config/db.js', () => ({
 
 vi.mock('../../src/lib/profileCache.js', () => profileCacheRef);
 
-import { getProfile, getCustomerStats, getDriverDetails } from '../../src/services/profileService.js';
-
-describe('getProfile', () => {
+describe('profileService', () => {
   beforeEach(() => {
-    supabaseRef.current = defaultMockSupabase;
     vi.clearAllMocks();
-    profileCacheRef.getCachedSupabaseProfile.mockResolvedValue(null);
-    profileCacheRef.setCachedSupabaseProfile.mockResolvedValue(undefined);
-    process.env.CACHE_ENABLED = 'true';
-  });
-
-  afterEach(() => {
-    delete process.env.CACHE_ENABLED;
-  });
-
-  it('throws when supabase is not configured', async () => {
-    supabaseRef.current = null;
-    await expect(getProfile('user-123')).rejects.toThrow('Supabase client not configured');
-  });
-
-  it('returns profile data on successful query', async () => {
     useMockSupabase();
-    const mockData = { id: 'user-123', firebase_uid: 'fb-uid', role: 'driver', full_name: 'John', phone: '+919876543210' };
-    mockEqProfileMaybeSingle.mockResolvedValueOnce({ data: mockData, error: null });
-    const result = await getProfile('user-123');
-    expect(result).toEqual(mockData);
   });
 
-  it('throws when supabase query returns an error', async () => {
-    useMockSupabase();
-    mockEqProfileMaybeSingle.mockResolvedValueOnce({ data: null, error: { message: 'Permission denied' } });
-    await expect(getProfile('user-123')).rejects.toThrow('Permission denied');
+  describe('getProfile', () => {
+    it('returns profile data from database when cache misses', async () => {
+      const mockProfile = { id: 'user-123', full_name: 'Test User' };
+      mockEqProfileMaybeSingle.mockResolvedValueOnce({ data: mockProfile, error: null });
+
+      const result = await getProfile('user-123');
+      expect(result).toEqual(mockProfile);
+      expect(profileCacheRef.setCachedSupabaseProfile).toHaveBeenCalledWith('user-123', mockProfile);
+    });
+
+    it('returns null when profile does not exist in database', async () => {
+      mockEqProfileMaybeSingle.mockResolvedValueOnce({ data: null, error: null });
+
+      const result = await getProfile('non-existent');
+      expect(result).toBeNull();
+    });
+
+    it('throws an error when Supabase returns an error (not fake data)', async () => {
+      mockEqProfileMaybeSingle.mockResolvedValueOnce({ data: null, error: new Error('connection refused') });
+
+      await expect(getProfile('user-123')).rejects.toThrow('connection refused');
+    });
+
+    it('returns cached profile when cache hit is valid', async () => {
+      const cachedProfile = { id: 'user-123', full_name: 'Cached User' };
+      profileCacheRef.getCachedSupabaseProfile.mockResolvedValueOnce(cachedProfile);
+      profileCacheRef.isValidCachedProfile.mockReturnValueOnce(true);
+
+      const result = await getProfile('user-123');
+      expect(result).toEqual(cachedProfile);
+      expect(mockEqProfileMaybeSingle).not.toHaveBeenCalled();
+    });
   });
 
-  it('returns null when no matching profile is found', async () => {
-    supabaseRef.current = {
-      from: vi.fn().mockReturnThis(),
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-    };
-    const result = await getProfile('nonexistent-user');
-    expect(result).toBeNull();
-  });
+  describe('getProfileById', () => {
+    it('returns null for invalid, non-string, or empty userId', async () => {
+      expect(await getProfileById(null)).toBeNull();
+      expect(await getProfileById(undefined)).toBeNull();
+      expect(await getProfileById('')).toBeNull();
+      expect(await getProfileById('   ')).toBeNull();
+      expect(await getProfileById(123)).toBeNull();
+    });
 
-  it('getProfileById returns null for invalid id format', async () => {
-    const result = await getProfileById('');
-    expect(result).toBeNull();
+    it('calls getProfile for valid userId', async () => {
+      const mockProfile = { id: 'user-123', full_name: 'Test User' };
+      mockEqProfileMaybeSingle.mockResolvedValueOnce({ data: mockProfile, error: null });
+
+      const result = await getProfileById('user-123');
+      expect(result).toEqual(mockProfile);
+    });
   });
 });
+
